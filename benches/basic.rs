@@ -47,6 +47,10 @@ macro_rules! bench_over_inputs {
     ($name:ident, |$bencher:ident, $input:ident| $bench:expr) => {
         fn $name(c: &mut Criterion) {
             let mut group = c.benchmark_group(stringify!($name));
+            group.plot_config(
+                criterion::PlotConfiguration::default()
+                    .summary_scale(criterion::AxisScale::Logarithmic),
+            );
             for input in INPUTS {
                 group.bench_with_input(
                     BenchmarkId::from_parameter(input.len()),
