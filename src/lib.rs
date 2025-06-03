@@ -11,15 +11,19 @@ mod raw;
 
 use ahash::AHashSet;
 use bstr::{BStr, BString};
-use serde::de::{Deserializer, Visitor};
-use serde::ser::Serializer;
-use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::Mutex;
+
+#[cfg(feature = "serde")]
+use serde::de::{Deserializer, Visitor};
+#[cfg(feature = "serde")]
+use serde::ser::Serializer;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 /// The global string cache for `FlyStr`.
 ///
@@ -314,20 +318,24 @@ impl Display for FlyStr {
     }
 }
 
+#[cfg(feature = "serde")]
 impl Serialize for FlyStr {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
     }
 }
 
+#[cfg(feature = "serde")]
 impl<'d> Deserialize<'d> for FlyStr {
     fn deserialize<D: Deserializer<'d>>(deserializer: D) -> Result<Self, D::Error> {
         deserializer.deserialize_str(FlyStrVisitor)
     }
 }
 
+#[cfg(feature = "serde")]
 struct FlyStrVisitor;
 
+#[cfg(feature = "serde")]
 impl Visitor<'_> for FlyStrVisitor {
     type Value = FlyStr;
     fn expecting(&self, formatter: &mut Formatter<'_>) -> FmtResult {
@@ -675,20 +683,24 @@ impl Display for FlyByteStr {
     }
 }
 
+#[cfg(feature = "serde")]
 impl Serialize for FlyByteStr {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_bytes(self.as_bytes())
     }
 }
 
+#[cfg(feature = "serde")]
 impl<'d> Deserialize<'d> for FlyByteStr {
     fn deserialize<D: Deserializer<'d>>(deserializer: D) -> Result<Self, D::Error> {
         deserializer.deserialize_bytes(FlyByteStrVisitor)
     }
 }
 
+#[cfg(feature = "serde")]
 struct FlyByteStrVisitor;
 
+#[cfg(feature = "serde")]
 impl<'de> Visitor<'de> for FlyByteStrVisitor {
     type Value = FlyByteStr;
     fn expecting(&self, formatter: &mut Formatter<'_>) -> FmtResult {
@@ -1359,6 +1371,7 @@ mod tests {
         assert_eq!(set.len(), 2);
     }
 
+    #[cfg(feature = "serde")]
     #[test_case("" ; "empty string")]
     #[test_case(SHORT_STRING ; "short strings")]
     #[test_case(MAX_LEN_SHORT_STRING ; "max len short strings")]
@@ -1374,6 +1387,7 @@ mod tests {
         assert_eq!(s, serde_json::from_str::<FlyStr>(&as_json).unwrap());
     }
 
+    #[cfg(feature = "serde")]
     #[test_case("" ; "empty string")]
     #[test_case(SHORT_STRING ; "short strings")]
     #[test_case(MAX_LEN_SHORT_STRING ; "max len short strings")]
