@@ -794,8 +794,13 @@ impl RawRepr {
     #[inline]
     fn new_inline(s: &[u8]) -> Self {
         assert!(s.len() <= MAX_INLINE_SIZE);
-        let new = Self { inline: InlineRepr::new(s) };
-        assert!(new.is_inline(), "least significant bit must be 1 for inline strings");
+        let new = Self {
+            inline: InlineRepr::new(s),
+        };
+        assert!(
+            new.is_inline(),
+            "least significant bit must be 1 for inline strings"
+        );
         new
     }
 
@@ -819,7 +824,10 @@ impl RawRepr {
 
         let for_cache = Storage(new_storage);
         let new = Self { heap: new_storage };
-        assert!(!new.is_inline(), "least significant bit must be 0 for heap strings");
+        assert!(
+            !new.is_inline(),
+            "least significant bit must be 0 for heap strings"
+        );
         cache.insert(for_cache);
         new
     }
@@ -991,7 +999,10 @@ impl InlineRepr {
         let mut contents = [0u8; MAX_INLINE_SIZE];
         contents[..s.len()].copy_from_slice(s);
 
-        Self { masked_len, contents }
+        Self {
+            masked_len,
+            contents,
+        }
     }
 
     #[inline]
@@ -1088,7 +1099,11 @@ mod tests {
         let bytes_cached = FlyByteStr::new(contents);
         assert_eq!(cached, cached.clone(), "must be equal to itself");
         assert_eq!(cached, contents, "must be equal to the original");
-        assert_eq!(cached, contents.to_owned(), "must be equal to an owned copy of the original");
+        assert_eq!(
+            cached,
+            contents.to_owned(),
+            "must be equal to an owned copy of the original"
+        );
         assert_eq!(cached, bytes_cached);
 
         // test inequality too
@@ -1180,11 +1195,19 @@ mod tests {
         assert_eq!(num_strings_in_global_cache(), 0);
 
         let original = FlyStr::new(contents);
-        assert_eq!(num_strings_in_global_cache(), 1, "only one string allocated");
+        assert_eq!(
+            num_strings_in_global_cache(),
+            1,
+            "only one string allocated"
+        );
         assert_eq!(original.0.refcount(), Some(1), "one copy on stack");
 
         let cloned = original.clone();
-        assert_eq!(num_strings_in_global_cache(), 1, "cloning just incremented refcount");
+        assert_eq!(
+            num_strings_in_global_cache(),
+            1,
+            "cloning just incremented refcount"
+        );
         assert_eq!(cloned.0.refcount(), Some(2), "two copies on stack");
 
         let deduped = FlyStr::new(contents);
@@ -1201,11 +1224,19 @@ mod tests {
         assert_eq!(num_strings_in_global_cache(), 0);
 
         let original = FlyByteStr::new(contents);
-        assert_eq!(num_strings_in_global_cache(), 1, "only one string allocated");
+        assert_eq!(
+            num_strings_in_global_cache(),
+            1,
+            "only one string allocated"
+        );
         assert_eq!(original.0.refcount(), Some(1), "one copy on stack");
 
         let cloned = original.clone();
-        assert_eq!(num_strings_in_global_cache(), 1, "cloning just incremented refcount");
+        assert_eq!(
+            num_strings_in_global_cache(),
+            1,
+            "cloning just incremented refcount"
+        );
         assert_eq!(cloned.0.refcount(), Some(2), "two copies on stack");
 
         let deduped = FlyByteStr::new(contents);
@@ -1224,7 +1255,11 @@ mod tests {
         assert_eq!(num_strings_in_global_cache(), 1, "string was allocated");
 
         let _bytes = FlyByteStr::from(MIN_LEN_LONG_STRING);
-        assert_eq!(num_strings_in_global_cache(), 1, "bytestring was pulled from cache");
+        assert_eq!(
+            num_strings_in_global_cache(),
+            1,
+            "bytestring was pulled from cache"
+        );
     }
 
     #[test_case(MIN_LEN_LONG_STRING ; "barely long strings")]
@@ -1234,7 +1269,11 @@ mod tests {
         reset_global_cache();
 
         let alloced = FlyStr::new(contents);
-        assert_eq!(num_strings_in_global_cache(), 1, "only one string allocated");
+        assert_eq!(
+            num_strings_in_global_cache(),
+            1,
+            "only one string allocated"
+        );
         drop(alloced);
         assert_eq!(num_strings_in_global_cache(), 0, "last reference dropped");
     }
@@ -1246,7 +1285,11 @@ mod tests {
         reset_global_cache();
 
         let alloced = FlyByteStr::new(contents);
-        assert_eq!(num_strings_in_global_cache(), 1, "only one string allocated");
+        assert_eq!(
+            num_strings_in_global_cache(),
+            1,
+            "only one string allocated"
+        );
         drop(alloced);
         assert_eq!(num_strings_in_global_cache(), 0, "last reference dropped");
     }
@@ -1270,10 +1313,18 @@ mod tests {
 
         // re-insert the same cmstring
         set.insert(first);
-        assert_eq!(set.len(), 1, "set did not grow because the same string was inserted as before");
+        assert_eq!(
+            set.len(),
+            1,
+            "set did not grow because the same string was inserted as before"
+        );
 
         set.insert(second.clone());
-        assert_eq!(set.len(), 2, "inserting a different string must mutate the set");
+        assert_eq!(
+            set.len(),
+            2,
+            "inserting a different string must mutate the set"
+        );
         assert!(set.contains(&second));
 
         // re-insert the second cmstring
@@ -1300,10 +1351,18 @@ mod tests {
 
         // re-insert the same string
         set.insert(first);
-        assert_eq!(set.len(), 1, "set did not grow because the same string was inserted as before");
+        assert_eq!(
+            set.len(),
+            1,
+            "set did not grow because the same string was inserted as before"
+        );
 
         set.insert(second.clone());
-        assert_eq!(set.len(), 2, "inserting a different string must mutate the set");
+        assert_eq!(
+            set.len(),
+            2,
+            "inserting a different string must mutate the set"
+        );
         assert!(set.contains(&second));
 
         // re-insert the second string
@@ -1330,10 +1389,18 @@ mod tests {
 
         // re-insert the same cmstring
         set.insert(first);
-        assert_eq!(set.len(), 1, "set did not grow because the same string was inserted as before");
+        assert_eq!(
+            set.len(),
+            1,
+            "set did not grow because the same string was inserted as before"
+        );
 
         set.insert(second.clone());
-        assert_eq!(set.len(), 2, "inserting a different string must mutate the set");
+        assert_eq!(
+            set.len(),
+            2,
+            "inserting a different string must mutate the set"
+        );
         assert!(set.contains(&second));
 
         // re-insert the second cmstring
@@ -1360,10 +1427,18 @@ mod tests {
 
         // re-insert the same string
         set.insert(first);
-        assert_eq!(set.len(), 1, "set did not grow because the same string was inserted as before");
+        assert_eq!(
+            set.len(),
+            1,
+            "set did not grow because the same string was inserted as before"
+        );
 
         set.insert(second.clone());
-        assert_eq!(set.len(), 2, "inserting a different string must mutate the set");
+        assert_eq!(
+            set.len(),
+            2,
+            "inserting a different string must mutate the set"
+        );
         assert!(set.contains(&second));
 
         // re-insert the second string
