@@ -3,11 +3,10 @@
 // found in the LICENSE file.
 
 use ahash::AHasher;
+use criterion::{BatchSize, BenchmarkId, Criterion};
 use flyweights::FlyStr;
-use fuchsia_criterion::criterion::{self, black_box, BatchSize, Fun};
-use fuchsia_criterion::FuchsiaCriterion;
 use std::hash::{Hash, Hasher};
-use std::time::Duration;
+use std::hint::black_box;
 
 const INPUTS: &[&str; 6] = &[
     // Empty
@@ -37,71 +36,92 @@ const INPUTS: &[&str; 6] = &[
     ),
 ];
 
-fn main() {
-    let mut c = FuchsiaCriterion::default();
-    let internal_c: &mut criterion::Criterion = &mut c;
-    *internal_c = std::mem::take(internal_c)
-        .warm_up_time(Duration::from_millis(1))
-        .measurement_time(Duration::from_millis(100))
-        .sample_size(1000);
+criterion::criterion_main!(lifecycle, access, hashing, comparison);
 
-    for input in INPUTS {
-        c.bench_functions(
-            "fuchsia.flyweights",
-            vec![
-                // Lifecycle
-                Fun::new(&format!("FromStrFirst/{}", input.len()), |b, input: &&str| {
-                    let input = black_box(*input);
-                    b.iter(|| FlyStr::from(input));
-                }),
-                Fun::new(&format!("FromStrDupe/{}", input.len()), |b, input: &&str| {
-                    let input = black_box(*input);
-                    // Make a copy of the FlyStr that will be live the whole time.
-                    let _existing = FlyStr::from(input);
-                    b.iter(|| FlyStr::from(input));
-                }),
-                Fun::new(&format!("Clone/{}", input.len()), |b, input: &&str| {
-                    let first = black_box(FlyStr::from(*input));
-                    b.iter(|| first.clone());
-                }),
-                Fun::new(&format!("DropDupe/{}", input.len()), |b, input: &&str| {
-                    // Make a copy of the FlyStr that will be live the whole time so we drop a copy.
-                    let input = black_box(FlyStr::from(*input));
-                    b.iter_batched(|| input.clone(), |input| drop(input), BatchSize::PerIteration);
-                }),
-                Fun::new(&format!("DropLast/{}", input.len()), |b, input: &&str| {
-                    let input = black_box(*input);
-                    b.iter_batched(
-                        || FlyStr::from(input),
-                        |input| drop(input),
-                        BatchSize::PerIteration,
-                    );
-                }),
-                // Access
-                Fun::new(&format!("AsStr/{}", input.len()), |b, input: &&str| {
-                    let input = black_box(FlyStr::from(*input));
-                    b.iter(|| input.as_str());
-                }),
-                // Hashing
-                Fun::new(&format!("AHash/{}", input.len()), |b, input: &&str| {
-                    let input = black_box(FlyStr::from(*input));
-                    b.iter_batched_ref(
-                        || AHasher::default(),
-                        |hasher| {
-                            input.hash(hasher);
-                            hasher.finish()
-                        },
-                        BatchSize::PerIteration,
-                    );
-                }),
-                // Comparison
-                Fun::new(&format!("Eq/{}", input.len()), |b, input: &&str| {
-                    let first = black_box(FlyStr::from(*input));
-                    let second = black_box(first.clone());
-                    b.iter(|| first == second);
-                }),
-            ],
-            *input,
-        );
-    }
+macro_rules! bench_over_inputs {
+    ($name:ident, |$bencher:ident, $input:ident| $bench:expr) => {
+        fn $name(c: &mut Criterion) {
+            let mut group = c.benchmark_group(stringify!($name));
+            for input in INPUTS {
+                group.bench_with_input(
+                    BenchmarkId::from_parameter(input.len()),
+                    input,
+                    |$bencher, input: &&str| {
+                        let $input = black_box(*input);
+                        $bench;
+                    },
+                );
+            }
+            group.finish();
+        }
+    };
 }
+
+criterion::criterion_group!(
+    lifecycle,
+    from_str_first,
+    from_str_dupe,
+    clone,
+    drop_dupe,
+    drop_last
+);
+
+bench_over_inputs!(from_str_first, |b, input| b.iter(|| FlyStr::from(input)));
+
+bench_over_inputs!(from_str_dupe, |b, input| {
+    // Make a copy of the FlyStr that will be live the whole time.
+    let _existing = FlyStr::from(input);
+    b.iter(|| FlyStr::from(input));
+});
+
+bench_over_inputs!(clone, |b, input| {
+    let first = black_box(FlyStr::from(input));
+    b.iter(|| first.clone());
+});
+
+bench_over_inputs!(drop_dupe, |b, input| {
+    // Make a copy of the FlyStr that will be live the whole time so we drop a copy.
+    let input = black_box(FlyStr::from(input));
+    b.iter_batched(
+        || input.clone(),
+        |input| drop(input),
+        BatchSize::PerIteration,
+    );
+});
+
+bench_over_inputs!(drop_last, |b, input| {
+    b.iter_batched(
+        || FlyStr::from(input),
+        |input| drop(input),
+        BatchSize::PerIteration,
+    );
+});
+
+criterion::criterion_group!(access, as_str);
+
+bench_over_inputs!(as_str, |b, input| {
+    let input = black_box(FlyStr::from(input));
+    b.iter(|| input.as_str());
+});
+
+criterion::criterion_group!(hashing, ahash);
+
+bench_over_inputs!(ahash, |b, input| {
+    let input = black_box(FlyStr::from(input));
+    b.iter_batched_ref(
+        || AHasher::default(),
+        |hasher| {
+            input.hash(hasher);
+            hasher.finish()
+        },
+        BatchSize::PerIteration,
+    );
+});
+
+criterion::criterion_group!(comparison, eq);
+
+bench_over_inputs!(eq, |b, input| {
+    let first = black_box(FlyStr::from(input));
+    let second = black_box(first.clone());
+    b.iter(|| first == second);
+});
