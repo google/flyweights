@@ -1,0 +1,33 @@
+# Copyright 2025 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+[package]
+name = "flyweights"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+include = ["LICENSE"]
+readme = "README.md"
+repository = "https://github.com/google/flyweights"
+authors = ["adamperry@google.com", "dkoloski@google.com"]
+description = "Interned strings & bytestrings for client-controlled values in long-lived programs."
+categories = ["caching", "rust-patterns"]
+keywords = ["string", "intern", "caching", "memory", "utility"]
+
+[features]
+default = []
+json_schema = ["schemars"]
+
+[dependencies]
+ahash = "0.8"
+bstr = "1.5"
+byteorder = "1.5"
+schemars = { version = "0.8", optional = true }
+serde = "1"
+static_assertions = "1.1"
+
+[dev-dependencies]
+serde_json = "1"
+test-case = "3.2"
+serial_test = "0.5"
