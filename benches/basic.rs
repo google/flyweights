@@ -36,7 +36,12 @@ const INPUTS: &[&str; 6] = &[
     ),
 ];
 
+#[cfg(not(miri))]
 criterion::criterion_main!(lifecycle, access, hashing, comparison);
+
+// Criterion doesn't work in miri right now: https://github.com/bheisler/criterion.rs/issues/778
+#[cfg(miri)]
+fn main() {}
 
 macro_rules! bench_over_inputs {
     ($name:ident, |$bencher:ident, $input:ident| $bench:expr) => {
