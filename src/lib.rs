@@ -3,7 +3,28 @@
 // found in the LICENSE file.
 
 //! Types implementing the [flyweight pattern](https://en.wikipedia.org/wiki/Flyweight_pattern)
-//! for reusing object allocations.
+//! for reusing string allocations.
+//!
+//! # Features
+//!
+//! * Supports UTF-8 string with `FlyStr` and UTF-8-ish bytestrings with `FlyByteStr`.
+//! * Easy drop-in replacement for immutable strings without wiring up any additional function args.
+//! * Accessing the underlying string values has overhead similar to a `Box<str>`.
+//! * Flyweights are cheap to clone.
+//! * Strings in the cache are freed when there are no more references to them. This is done when
+//!   the last reference drops to avoid latency spikes from garbage collection.
+//! * Heap allocations are avoided when possible with small string optimizations (SSO).
+//! * Equality and hashing operations are O(1) regardless of the size of the string.
+//!
+//! # Tradeoffs
+//!
+//! This was originally written for [Fuchsia](https://fuchsia.dev) at a time when popular options
+//! didn't fit the needs of adding caching to an existing long-running multithreaded system service
+//! that holds an unbounded number of user-controlled strings. The above features are suited to this
+//! use case, but there are many (many) alternative [string caching crates] to choose from if you
+//! have different constraints.
+//!
+//! [string caching crates]: https://crates.io/search?q=intern
 
 #![warn(missing_docs, clippy::all)]
 
