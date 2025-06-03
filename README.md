@@ -1,54 +1,68 @@
 # flyweights
 
-Types implementing the [flyweight pattern] for reusing object allocations.
-See the crate's [documentation] for details on the approach taken and tradeoffs
-to consider.
+Types implementing the [flyweight pattern] for interning object allocations. Supports UTF-8 strings
+and bytestrings.
 
-<!-- TODO(fxr/787502) mention dupefinder to find places to use -->
+# Goals & Tradeoffs
 
-## Comparison to other crates
+There are many (many) crates for interning strings in Rust. This was originally written for
+[Fuchsia](https://fuchsia.dev) when the existing options didn't seem to fit the needs of a
+long-running system service. These are some of the ways in which it differs from some other
+approaches.
 
-As of January 2023, there did not appear to be any popular external crates for
-interning which fit all of our requirements:
+## Easy to retrofit into multithreading
 
-* global synchronization limited to creating the values, not required for
-  reading them once created
-* offers a short string optimization (SSO)
-* types implement `Send` and `Sync`
-* frees allocations for unused strings incrementally without spiking (no GC)
-* limited usage of `unsafe`
-* recently maintained, some dependents in the ecosystem
+To avoid large refactors when adopting in existing programs with many threads and lots of strings,
+`flyweights` doesn't need any additional arguments to create, read, or drop a string and the types
+all implement `Send` and `Sync`.
 
-Alternatives evaluated along with reasons for rejection:
+This requires that the string cache is global and that users have less control over the lifecycle of
+underlying allocations compared to some other approaches.
 
-* [arc-string-interner](https://crates.io/crates/arc-string-interner)
-  * no way to free unused strings
-  * no SSO possible
-* [intaglio](https://crates.io/crates/intaglio)
-  * no way to free unused strings
-  * no SSO possible
-* [intern-arc](https://crates.io/crates/intern-arc)
-  * no SSO possible
-  * lots of unsafe code to support features we don't need
-* [internment](https://crates.io/crates/internment) (& a fork [arc-interner](https://crates.io/crates/arc-interner))
-  * no SSO possible
-  * large transitive dependencies with lots of unsafe
-* [internship](https://crates.io/crates/internship)
-  * types can't be used across multiple threads
-* [lasso](https://crates.io/crates/lasso)
-  * no way to free unused strings
-* [refcount-interner](https://crates.io/crates/refcount-interner)
-  * requires manually calling `shrink_to_fit()` on the interner instead of
-    freeing unused strings as their references are dropped, too expensive to
-    call on every `Drop`
-* [string-intern](https://crates.io/crates/string-intern)
-  * no updates for 5 years, is marked as beta in its readme
-* [string-interner](https://crates.io/crates/string-interner)
-  * no way to free unused strings
-* [symbol_interner](https://crates.io/crates/symbol_interner)
-  * no way to free unused strings
-* [symtern](https://crates.io/crates/symtern)
-  * no way to free unused strings
+## Uses memory proportional to live strings
+
+To be suitable for long-running processes, memory usage is limited to currently live strings.
+Strings are reference-counted, and the cached values are dropped when the last reference is dropped.
+
+As a result there is more runtime overhead required to keep track of string lifecycle when compared
+with some other approaches.
+
+## Avoids latency spikes
+
+Aside from the latency of reallocating the cache storage, there are no large batch operations like
+explicit garbage collection of the cache.
+
+This comes with some bookkeeping overhead that could potentially be avoided in a library that's
+able to restrict cleaning up the cache to specific points in the program.
+
+## Minimal memory usage
+
+`flyweights`' string types all have a small string optimization (SSO) that stores very short strings
+inline in the pointer instead of heap allocating in the cache. This can save a significant amount
+of memory depending on the workload.
+
+This does create a significant amount of `unsafe` which has been thoroughly reviewed and is tested
+with `miri`.
+
+## O(1) equality and hashing
+
+Because `flyweights` uses global storage, there is only a single pointer value for any given cached
+string at any given time. Because the pointer value uniquely identifies the string, we can implement
+equality and hashing on the pointer value instead of the string contents, making a typically O(n)
+operation into O(1) and avoiding a pointer chase.
+
+The main cost of this feature is that the strings in this crate don't implement `Borrow<str>`.
+
+# License
+
+See [LICENSE](LICENSE).
+
+# Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+# Code of Conduct
+
+See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 [flyweight pattern]: https://en.wikipedia.org/wiki/Flyweight_pattern
-[documentation]: ./src/lib.rs
