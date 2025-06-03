@@ -5,7 +5,7 @@
 //! Types implementing the [flyweight pattern](https://en.wikipedia.org/wiki/Flyweight_pattern)
 //! for reusing object allocations.
 
-#![warn(missing_docs)]
+#![warn(missing_docs, clippy::all)]
 
 mod raw;
 
@@ -200,17 +200,17 @@ impl TryFrom<FlyByteStr> for FlyStr {
     }
 }
 
-impl Into<String> for FlyStr {
+impl From<FlyStr> for String {
     #[inline]
-    fn into(self) -> String {
-        self.as_str().to_owned()
+    fn from(s: FlyStr) -> String {
+        s.as_str().to_owned()
     }
 }
 
-impl Into<String> for &'_ FlyStr {
+impl From<&'_ FlyStr> for String {
     #[inline]
-    fn into(self) -> String {
-        self.as_str().to_owned()
+    fn from(s: &FlyStr) -> String {
+        s.as_str().to_owned()
     }
 }
 
@@ -528,17 +528,17 @@ impl From<&Box<str>> for FlyByteStr {
     }
 }
 
-impl Into<BString> for FlyByteStr {
+impl From<FlyByteStr> for BString {
     #[inline]
-    fn into(self) -> BString {
-        self.as_bstr().to_owned()
+    fn from(s: FlyByteStr) -> BString {
+        s.as_bstr().to_owned()
     }
 }
 
-impl Into<Vec<u8>> for FlyByteStr {
+impl From<FlyByteStr> for Vec<u8> {
     #[inline]
-    fn into(self) -> Vec<u8> {
-        self.as_bytes().to_owned()
+    fn from(s: FlyByteStr) -> Vec<u8> {
+        s.as_bytes().to_owned()
     }
 }
 
@@ -986,7 +986,7 @@ const MAX_INLINE_SIZE: usize = std::mem::size_of::<NonNull<raw::Payload>>() - 1;
 // Guard rail to make sure we never end up with an incorrect inline size encoding. Ensure that
 // MAX_INLINE_SIZE is always smaller than the maximum size we can represent in a byte with the LSB
 // reserved.
-static_assertions::const_assert!((std::u8::MAX >> 1) as usize >= MAX_INLINE_SIZE);
+static_assertions::const_assert!((u8::MAX >> 1) as usize >= MAX_INLINE_SIZE);
 
 impl InlineRepr {
     #[inline]
