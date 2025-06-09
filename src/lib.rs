@@ -7,14 +7,14 @@
 //!
 //! # Features
 //!
-//! * Supports UTF-8 string with `FlyStr` and UTF-8-ish bytestrings with `FlyByteStr`.
+//! * Supports UTF-8 string with [`FlyStr`] and UTF-8-ish bytestrings with [`FlyByteStr`].
 //! * Easy drop-in replacement for immutable strings without wiring up any additional function args.
 //! * Accessing the underlying string values has overhead similar to a `Box<str>`.
-//! * Flyweights are cheap to clone.
-//! * Strings in the cache are freed when there are no more references to them. This is done when
-//!   the last reference drops to avoid latency spikes from garbage collection.
+//! * Cheap to clone.
+//! * Strings in the cache are freed when the last reference to them is dropped.
 //! * Heap allocations are avoided when possible with small string optimizations (SSO).
-//! * Equality and hashing operations are O(1) regardless of the size of the string.
+//! * Hashing a flyweight and comparing it for equality against another flyweight are both O(1)
+//!   operations.
 //!
 //! # Tradeoffs
 //!
@@ -149,11 +149,10 @@ impl FlyStr {
     ///
     /// # Performance
     ///
-    /// Creating an instance of this type requires accessing the global cache of strings, which
-    /// involves taking a lock. When multiple threads are allocating lots of strings there may be
-    /// contention.
-    ///
-    /// Each string allocated is hashed for lookup in the cache.
+    /// Creating an instance of this type for strings longer than the maximum inline size requires
+    /// accessing the global cache of strings, which involves taking a lock. When multiple threads
+    /// are allocating lots of strings there may be contention. Each string allocated is hashed for
+    /// lookup in the cache.
     #[inline]
     pub fn new(s: impl AsRef<str> + Into<String>) -> Self {
         Self(RawRepr::new_str(s))
@@ -435,11 +434,10 @@ impl FlyByteStr {
     ///
     /// # Performance
     ///
-    /// Creating an instance of this type requires accessing the global cache of strings, which
-    /// involves taking a lock. When multiple threads are allocating lots of strings there may be
-    /// contention.
-    ///
-    /// Each string allocated is hashed for lookup in the cache.
+    /// Creating an instance of this type for strings longer than the maximum inline size requires
+    /// accessing the global cache of strings, which involves taking a lock. When multiple threads
+    /// are allocating lots of strings there may be contention. Each string allocated is hashed for
+    /// lookup in the cache.
     pub fn new(s: impl AsRef<[u8]> + Into<Vec<u8>>) -> Self {
         Self(RawRepr::new(s))
     }
