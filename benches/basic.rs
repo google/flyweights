@@ -91,19 +91,11 @@ bench_over_inputs!(clone, |b, input| {
 bench_over_inputs!(drop_dupe, |b, input| {
     // Make a copy of the FlyStr that will be live the whole time so we drop a copy.
     let input = black_box(FlyStr::from(input));
-    b.iter_batched(
-        || input.clone(),
-        |input| drop(input),
-        BatchSize::PerIteration,
-    );
+    b.iter_batched(|| input.clone(), drop, BatchSize::PerIteration);
 });
 
 bench_over_inputs!(drop_last, |b, input| {
-    b.iter_batched(
-        || FlyStr::from(input),
-        |input| drop(input),
-        BatchSize::PerIteration,
-    );
+    b.iter_batched(|| FlyStr::from(input), drop, BatchSize::PerIteration);
 });
 
 criterion::criterion_group!(access, as_str);
@@ -118,7 +110,7 @@ criterion::criterion_group!(hashing, ahash);
 bench_over_inputs!(ahash, |b, input| {
     let input = black_box(FlyStr::from(input));
     b.iter_batched_ref(
-        || AHasher::default(),
+        AHasher::default,
         |hasher| {
             input.hash(hasher);
             hasher.finish()
