@@ -50,8 +50,6 @@ jobs:
         run: cargo test --verbose --release ${{ matrix.features }}
       - name: Doc tests
         run: cargo test --doc ${{ matrix.features }}
-      - name: Benchmark dry run
-        run: cargo bench  ${{ matrix.features }} -- --dry-run
 
   miri:
     name: Miri
