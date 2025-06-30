@@ -51,6 +51,7 @@ jobs:
       - name: Doc tests
         run: cargo test --doc ${{ matrix.features }}
 
+  # Checking miri runs on a separate job that only gets the nightly toolchain.
   miri:
     name: Miri
     runs-on: ubuntu-latest
@@ -59,8 +60,9 @@ jobs:
         features: ['', '--all-features']
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2024-06-15
           components: miri
       - name: Run Miri
         run: cargo miri test ${{ matrix.features }}
