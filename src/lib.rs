@@ -7,7 +7,7 @@
 //!
 //! # Features
 //!
-//! * Supports UTF-8 string with [`FlyStr`] and UTF-8-ish bytestrings with [`FlyByteStr`].
+//! * Supports UTF-8 strings with [`FlyStr`] and UTF-8-ish bytestrings with [`FlyByteStr`].
 //! * Easy drop-in replacement for immutable strings without wiring up any additional function args.
 //! * Accessing the underlying string values has overhead similar to a `Box<str>`.
 //! * Cheap to clone.
