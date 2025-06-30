@@ -371,7 +371,7 @@ impl Visitor<'_> for FlyStrVisitor {
         formatter.write_str("a string")
     }
 
-    fn visit_borrowed_str<'de, E>(self, v: &'de str) -> Result<Self::Value, E>
+    fn visit_borrowed_str<E>(self, v: &str) -> Result<Self::Value, E>
     where
         E: serde::de::Error,
     {
@@ -490,7 +490,7 @@ impl From<&'_ [u8]> for FlyByteStr {
 impl<const N: usize> From<[u8; N]> for FlyByteStr {
     #[inline]
     fn from(s: [u8; N]) -> Self {
-        Self::new(&s)
+        Self::new(s)
     }
 }
 
