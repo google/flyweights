@@ -144,6 +144,15 @@ impl schemars::JsonSchema for FlyStr {
 
 static_assertions::assert_eq_size!(FlyStr, usize);
 
+// `Borrow` requires that:
+//
+// > Eq, Ord and Hash must be equivalent for borrowed and owned values: x.borrow() == y.borrow()
+// > should give the same result as x == y.
+//
+// The current implementation of `FlyStr` cannot satisfy `Borrow<str>` because the O(1) hashing
+// feature means that `s.hash() != s.borrow().hash()`.
+static_assertions::assert_not_impl_any!(FlyStr: Borrow<str>);
+
 impl FlyStr {
     /// Create a `FlyStr`, allocating it in the cache if the value is not already cached.
     ///
@@ -428,6 +437,15 @@ macro_rules! new_raw_repr {
 pub struct FlyByteStr(RawRepr);
 
 static_assertions::assert_eq_size!(FlyByteStr, usize);
+
+// `Borrow` requires that:
+//
+// > Eq, Ord and Hash must be equivalent for borrowed and owned values: x.borrow() == y.borrow()
+// > should give the same result as x == y.
+//
+// The current implementation of `FlyByteStr` cannot satisfy `Borrow<str>` because the O(1) hashing
+// feature means that `s.hash() != s.borrow().hash()`.
+static_assertions::assert_not_impl_any!(FlyByteStr: Borrow<str>);
 
 impl FlyByteStr {
     /// Create a `FlyByteStr`, allocating it in the cache if the value is not already cached.
