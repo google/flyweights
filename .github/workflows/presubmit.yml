@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        features: ['', '--all-features']
+        features: ['', '--features serde', '--features json_schema', '--all-features']
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -34,7 +34,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         # MSRV, stable, beta
         rust: ["1.81.0", "stable", "beta"]
-        features: ['', '--all-features']
+        features: ['', '--features serde', '--features json_schema', '--all-features']
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        features: ['', '--all-features']
+        features: ['', '--features serde', '--features json_schema', '--all-features']
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
