@@ -30,8 +30,9 @@
 
 mod raw;
 
-use ahash::AHashSet;
+use ahash::RandomState;
 use bstr::{BStr, BString};
+use hashbrown::{hash_table::Entry, hash_table::VacantEntry, HashTable};
 use std::borrow::Borrow;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::hash::{Hash, Hasher};
@@ -50,8 +51,13 @@ use serde::{Deserialize, Serialize};
 ///
 /// If a live `FlyStr` contains an `Storage`, the `Storage` must also be in this cache and it must
 /// have a refcount of >= 2.
-static CACHE: std::sync::LazyLock<Mutex<AHashSet<Storage>>> =
-    std::sync::LazyLock::new(|| Mutex::new(AHashSet::new()));
+static CACHE: std::sync::LazyLock<Cache> = std::sync::LazyLock::new(Cache::default);
+
+#[derive(Default)]
+struct Cache {
+    hasher: RandomState,
+    table: Mutex<HashTable<Storage>>,
+}
 
 /// Wrapper type for stored strings that lets us query the cache without an owned value.
 #[repr(transparent)]
@@ -398,11 +404,16 @@ macro_rules! new_raw_repr {
         if $borrowed_bytes.len() <= MAX_INLINE_SIZE {
             RawRepr::new_inline($borrowed_bytes)
         } else {
-            let mut cache = CACHE.lock().unwrap();
-            if let Some(existing) = cache.get($borrowed_bytes) {
-                RawRepr::from_storage(existing)
-            } else {
-                RawRepr::new_for_storage(&mut cache, $borrowed_bytes)
+            let cache = &*CACHE;
+            let mut table = cache.table.lock().unwrap();
+
+            match table.entry(
+                cache.hasher.hash_one($borrowed_bytes),
+                |storage: &Storage| $borrowed_bytes == storage.as_bytes(),
+                |storage: &Storage| cache.hasher.hash_one(storage.as_bytes()),
+            ) {
+                Entry::Occupied(entry) => RawRepr::from_storage(entry.get()),
+                Entry::Vacant(entry) => RawRepr::new_for_storage(entry, $borrowed_bytes),
             }
         }
     };
@@ -861,7 +872,7 @@ impl RawRepr {
     }
 
     #[inline]
-    fn new_for_storage(cache: &mut AHashSet<Storage>, bytes: &[u8]) -> Self {
+    fn new_for_storage(entry: VacantEntry<'_, Storage>, bytes: &[u8]) -> Self {
         assert!(bytes.len() > MAX_INLINE_SIZE);
         // `Payload::alloc` starts the refcount at 1.
         let new_storage = raw::Payload::alloc(bytes);
@@ -872,7 +883,7 @@ impl RawRepr {
             !new.is_inline(),
             "least significant bit must be 0 for heap strings"
         );
-        cache.insert(for_cache);
+        entry.insert(for_cache);
         new
     }
 
@@ -980,7 +991,8 @@ impl Drop for RawRepr {
 
             // If we held the final refcount outside of the cache, try to remove the string.
             if prev_refcount == 1 {
-                let mut cache = CACHE.lock().unwrap();
+                let cache = &*CACHE;
+                let mut table = cache.table.lock().unwrap();
 
                 let current_refcount = unsafe { raw::Payload::dec_ref(heap.as_ptr()) };
                 if current_refcount <= 1 {
@@ -991,13 +1003,21 @@ impl Drop for RawRepr {
                     // from the cache and free it.
 
                     let bytes = unsafe { &*raw::Payload::bytes(heap.as_ptr()) };
-                    assert!(
-                        cache.remove(bytes),
-                        "cache did not contain bytes, but this thread didn't remove them yet",
-                    );
+
+                    if let Ok(entry) = table
+                        .find_entry(cache.hasher.hash_one(bytes), |storage: &Storage| {
+                            self.as_bytes() == storage.as_bytes()
+                        })
+                    {
+                        entry.remove();
+                    } else {
+                        panic!(
+                            "cache did not contain bytes, but this thread didn't remove them yet"
+                        )
+                    }
 
                     // Get out of the critical section as soon as possible
-                    drop(cache);
+                    drop(table);
 
                     // SAFETY: The payload is live.
                     unsafe { raw::Payload::dealloc(heap.as_ptr()) };
@@ -1060,7 +1080,7 @@ impl InlineRepr {
 mod tests {
     use super::*;
     use static_assertions::{const_assert, const_assert_eq};
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashSet};
     use test_case::test_case;
 
     // These tests all manipulate the process-global cache in the parent module. On target devices
@@ -1072,13 +1092,13 @@ mod tests {
 
     fn reset_global_cache() {
         // We still want subsequent tests to be able to run if one in the same process panics.
-        match CACHE.lock() {
-            Ok(mut c) => *c = AHashSet::new(),
-            Err(e) => *e.into_inner() = AHashSet::new(),
+        match CACHE.table.lock() {
+            Ok(mut c) => *c = HashTable::new(),
+            Err(e) => *e.into_inner() = HashTable::new(),
         }
     }
     fn num_strings_in_global_cache() -> usize {
-        CACHE.lock().unwrap().len()
+        CACHE.table.lock().unwrap().len()
     }
 
     impl RawRepr {
@@ -1350,7 +1370,7 @@ mod tests {
         let first = FlyStr::new(first);
         let second = FlyStr::new(second);
 
-        let mut set = AHashSet::new();
+        let mut set = HashSet::new();
         set.insert(first.clone());
         assert!(set.contains(&first));
         assert!(!set.contains(&second));
@@ -1388,7 +1408,7 @@ mod tests {
         let first = FlyByteStr::new(first);
         let second = FlyByteStr::new(second);
 
-        let mut set = AHashSet::new();
+        let mut set = HashSet::new();
         set.insert(first.clone());
         assert!(set.contains(&first));
         assert!(!set.contains(&second));
