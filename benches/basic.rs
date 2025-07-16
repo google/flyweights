@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use ahash::AHasher;
 use criterion::{BatchSize, BenchmarkId, Criterion};
 use flyweights::FlyStr;
-use std::hash::{Hash, Hasher};
+use foldhash::fast::FixedState;
+use std::hash::{BuildHasher as _, Hash, Hasher};
 use std::hint::black_box;
 
 const INPUTS: &[&str; 6] = &[
@@ -105,12 +105,12 @@ bench_over_inputs!(as_str, |b, input| {
     b.iter(|| input.as_str());
 });
 
-criterion::criterion_group!(hashing, ahash);
+criterion::criterion_group!(hashing, foldhash);
 
-bench_over_inputs!(ahash, |b, input| {
+bench_over_inputs!(foldhash, |b, input| {
     let input = black_box(FlyStr::from(input));
     b.iter_batched_ref(
-        AHasher::default,
+        || FixedState::default().build_hasher(),
         |hasher| {
             input.hash(hasher);
             hasher.finish()
