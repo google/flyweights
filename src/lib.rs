@@ -30,12 +30,12 @@
 
 mod raw;
 
-use ahash::RandomState;
 use bstr::{BStr, BString};
+use foldhash::fast::RandomState;
 use hashbrown::{hash_table::Entry, hash_table::VacantEntry, HashTable};
 use std::borrow::Borrow;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasher as _, Hash, Hasher};
 use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::Mutex;
