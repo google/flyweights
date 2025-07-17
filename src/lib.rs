@@ -169,8 +169,8 @@ impl FlyStr {
     /// are allocating lots of strings there may be contention. Each string allocated is hashed for
     /// lookup in the cache.
     #[inline]
-    pub fn new(s: impl AsRef<str> + Into<String>) -> Self {
-        Self(RawRepr::new_str(s))
+    pub fn new(s: impl AsRef<str>) -> Self {
+        Self(RawRepr::new(s.as_ref().as_bytes()))
     }
 
     /// Returns the underlying string slice.
@@ -399,26 +399,6 @@ impl Visitor<'_> for FlyStrVisitor {
     }
 }
 
-macro_rules! new_raw_repr {
-    ($borrowed_bytes:expr) => {
-        if $borrowed_bytes.len() <= MAX_INLINE_SIZE {
-            RawRepr::new_inline($borrowed_bytes)
-        } else {
-            let cache = &*CACHE;
-            let mut table = cache.table.lock().unwrap();
-
-            match table.entry(
-                cache.hasher.hash_one($borrowed_bytes),
-                |storage: &Storage| $borrowed_bytes == storage.as_bytes(),
-                |storage: &Storage| cache.hasher.hash_one(storage.as_bytes()),
-            ) {
-                Entry::Occupied(entry) => RawRepr::from_storage(entry.get()),
-                Entry::Vacant(entry) => RawRepr::new_for_storage(entry, $borrowed_bytes),
-            }
-        }
-    };
-}
-
 /// An immutable bytestring type which only stores a single copy of each string allocated.
 /// Internally represented as a shared pointer to the backing allocation. Occupies a single pointer width.
 ///
@@ -467,8 +447,9 @@ impl FlyByteStr {
     /// accessing the global cache of strings, which involves taking a lock. When multiple threads
     /// are allocating lots of strings there may be contention. Each string allocated is hashed for
     /// lookup in the cache.
-    pub fn new(s: impl AsRef<[u8]> + Into<Vec<u8>>) -> Self {
-        Self(RawRepr::new(s))
+    #[inline]
+    pub fn new(s: impl AsRef<[u8]>) -> Self {
+        Self(RawRepr::new(s.as_ref()))
     }
 
     /// Returns the underlying bytestring slice.
@@ -508,8 +489,7 @@ impl<const N: usize> From<[u8; N]> for FlyByteStr {
 impl From<&'_ BStr> for FlyByteStr {
     #[inline]
     fn from(s: &BStr) -> Self {
-        let bytes: &[u8] = s.as_ref();
-        Self(new_raw_repr!(bytes))
+        Self(RawRepr::new(s))
     }
 }
 
@@ -523,7 +503,7 @@ impl From<&'_ str> for FlyByteStr {
 impl From<&'_ Vec<u8>> for FlyByteStr {
     #[inline]
     fn from(s: &Vec<u8>) -> Self {
-        Self(new_raw_repr!(&s[..]))
+        Self(RawRepr::new(s))
     }
 }
 
@@ -565,14 +545,14 @@ impl From<Box<[u8]>> for FlyByteStr {
 impl From<Box<str>> for FlyByteStr {
     #[inline]
     fn from(s: Box<str>) -> Self {
-        Self(new_raw_repr!(s.as_bytes()))
+        Self(RawRepr::new(s.as_bytes()))
     }
 }
 
 impl From<&'_ Box<[u8]>> for FlyByteStr {
     #[inline]
     fn from(s: &'_ Box<[u8]>) -> Self {
-        Self(new_raw_repr!(&**s))
+        Self(RawRepr::new(s))
     }
 }
 
@@ -836,14 +816,23 @@ unsafe impl Send for RawRepr {}
 unsafe impl Sync for RawRepr {}
 
 impl RawRepr {
-    fn new_str(s: impl AsRef<str>) -> Self {
-        let borrowed = s.as_ref();
-        new_raw_repr!(borrowed.as_bytes())
-    }
+    #[inline]
+    fn new(s: &[u8]) -> Self {
+        if s.len() <= MAX_INLINE_SIZE {
+            RawRepr::new_inline(s)
+        } else {
+            let cache = &*CACHE;
+            let mut table = cache.table.lock().unwrap();
 
-    fn new(s: impl AsRef<[u8]>) -> Self {
-        let borrowed = s.as_ref();
-        new_raw_repr!(borrowed)
+            match table.entry(
+                cache.hasher.hash_one(s),
+                |storage: &Storage| s == storage.as_bytes(),
+                |storage: &Storage| cache.hasher.hash_one(storage.as_bytes()),
+            ) {
+                Entry::Occupied(entry) => RawRepr::from_storage(entry.get()),
+                Entry::Vacant(entry) => RawRepr::new_for_storage(entry, s),
+            }
+        }
     }
 
     #[inline]
