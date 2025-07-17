@@ -37,7 +37,7 @@ const INPUTS: &[&str; 6] = &[
 ];
 
 #[cfg(not(miri))]
-criterion::criterion_main!(lifecycle, access, hashing, comparison);
+criterion::criterion_main!(lifecycle, contended, access, hashing, comparison);
 
 // Criterion doesn't work in miri right now: https://github.com/bheisler/criterion.rs/issues/778
 #[cfg(miri)]
@@ -97,6 +97,40 @@ bench_over_inputs!(drop_dupe, |b, input| {
 bench_over_inputs!(drop_last, |b, input| {
     b.iter_batched(|| FlyStr::from(input), drop, BatchSize::PerIteration);
 });
+
+macro_rules! contended_from_str {
+    ($([$name:ident, $count:expr];)+) => {
+        criterion::criterion_group!(
+            contended,
+            $($name),+
+        );
+
+        $(
+            bench_over_inputs!($name, |b, input| {
+                std::thread::scope(|s| {
+                    b.iter(|| {
+                        let handles = (0..$count)
+                            .map(|_| s.spawn(|| FlyStr::from(input)))
+                            .collect::<Vec<_>>();
+
+                        handles
+                            .into_iter()
+                            .map(|handle| handle.join().unwrap())
+                            .collect::<Vec<_>>()
+                    });
+                })
+            });
+        )+
+    }
+}
+
+contended_from_str! {
+    [from_str_contended2, 2];
+    [from_str_contended4, 4];
+    [from_str_contended8, 8];
+    [from_str_contended16, 16];
+    [from_str_contended32, 32];
+}
 
 criterion::criterion_group!(access, as_str);
 
