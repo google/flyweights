@@ -37,7 +37,14 @@ const INPUTS: &[&str; 6] = &[
 ];
 
 #[cfg(not(miri))]
-criterion::criterion_main!(lifecycle, access, hashing, comparison);
+criterion::criterion_main!(
+    lifecycle,
+    access,
+    hashing,
+    comparison,
+    multithreaded_contended,
+    multithreaded_distributed,
+);
 
 // Criterion doesn't work in miri right now: https://github.com/bheisler/criterion.rs/issues/778
 #[cfg(miri)]
@@ -126,3 +133,75 @@ bench_over_inputs!(eq, |b, input| {
     let second = black_box(first.clone());
     b.iter(|| first == second);
 });
+
+macro_rules! contended_from_str {
+    ($([$name:ident, $thread_count:expr];)+) => {
+        criterion::criterion_group!(
+            multithreaded_contended,
+            $($name),+
+        );
+
+        $(
+            bench_over_inputs!($name, |b, input| {
+                std::thread::scope(|s| {
+                    b.iter(|| {
+                        let handles = std::array::from_fn::<_, $thread_count, _>(|_| {
+                            s.spawn(|| FlyStr::from(input))
+                        });
+
+                        handles.map(|handle| handle.join().unwrap())
+                    });
+                })
+            });
+        )+
+    }
+}
+
+contended_from_str! {
+    [from_str_contended1, 1];
+    [from_str_contended2, 2];
+    [from_str_contended4, 4];
+    [from_str_contended8, 8];
+    [from_str_contended16, 16];
+    [from_str_contended32, 32];
+    [from_str_contended64, 64];
+}
+
+macro_rules! distributed_from_str {
+    ($([$name:ident, $thread_count:expr];)+) => {
+        criterion::criterion_group!(
+            multithreaded_distributed,
+            $($name),+
+        );
+
+        $(
+            bench_over_inputs!($name, |b, input| {
+                let inputs = std::array::from_fn::<_, {$thread_count * 10}, _>(|i| format!("{input}:{i}"));
+
+                std::thread::scope(|s| {
+                    let inputs = &inputs;
+                    b.iter(|| {
+                        let handles: [_; $thread_count] = std::array::from_fn(|thread_number| {
+                            let thread_number: usize = thread_number;
+                            s.spawn(move || {
+                                std::array::from_fn::<_, 10, _>(|i| FlyStr::from(inputs[thread_number * i].as_str()))
+                            })
+                        });
+
+                        handles.map(|handle| handle.join().unwrap())
+                    });
+                })
+            });
+        )+
+    }
+}
+
+distributed_from_str! {
+    [from_str_distributed1, 1];
+    [from_str_distributed2, 2];
+    [from_str_distributed4, 4];
+    [from_str_distributed8, 8];
+    [from_str_distributed16, 16];
+    [from_str_distributed32, 32];
+    [from_str_distributed64, 64];
+}

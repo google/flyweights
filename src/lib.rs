@@ -38,7 +38,7 @@ use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::hash::{BuildHasher as _, Hash, Hasher};
 use std::ops::Deref;
 use std::ptr::NonNull;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 #[cfg(feature = "serde")]
 use serde::de::{Deserializer, Visitor};
@@ -47,16 +47,28 @@ use serde::ser::Serializer;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+const SHARD_COUNT: usize = 16;
+
 /// The global string cache for `FlyStr`.
 ///
 /// If a live `FlyStr` contains an `Storage`, the `Storage` must also be in this cache and it must
 /// have a refcount of >= 2.
-static CACHE: std::sync::LazyLock<Cache> = std::sync::LazyLock::new(Cache::default);
+static CACHE: std::sync::LazyLock<Cache> = std::sync::LazyLock::new(|| Cache {
+    hasher: RandomState::default(),
+    tables: std::array::from_fn(|_| Default::default()),
+});
 
-#[derive(Default)]
 struct Cache {
     hasher: RandomState,
-    table: Mutex<HashTable<Storage>>,
+    tables: [Mutex<HashTable<Storage>>; SHARD_COUNT],
+}
+
+impl Cache {
+    fn lock_table(&self, hash: u64) -> MutexGuard<HashTable<Storage>> {
+        let i = (hash % SHARD_COUNT as u64) as usize;
+        let table: &Mutex<HashTable<Storage>> = self.tables.get(i).expect("table in bounds");
+        table.lock().unwrap()
+    }
 }
 
 /// Wrapper type for stored strings that lets us query the cache without an owned value.
@@ -822,10 +834,12 @@ impl RawRepr {
             RawRepr::new_inline(s)
         } else {
             let cache = &*CACHE;
-            let mut table = cache.table.lock().unwrap();
+
+            let hash = cache.hasher.hash_one(s);
+            let mut table = cache.lock_table(hash);
 
             match table.entry(
-                cache.hasher.hash_one(s),
+                hash,
                 |storage: &Storage| s == storage.as_bytes(),
                 |storage: &Storage| cache.hasher.hash_one(storage.as_bytes()),
             ) {
@@ -981,7 +995,9 @@ impl Drop for RawRepr {
             // If we held the final refcount outside of the cache, try to remove the string.
             if prev_refcount == 1 {
                 let cache = &*CACHE;
-                let mut table = cache.table.lock().unwrap();
+                let bytes = unsafe { &*raw::Payload::bytes(heap.as_ptr()) };
+                let hash = cache.hasher.hash_one(bytes);
+                let mut table = cache.lock_table(hash);
 
                 let current_refcount = unsafe { raw::Payload::dec_ref(heap.as_ptr()) };
                 if current_refcount <= 1 {
@@ -991,13 +1007,9 @@ impl Drop for RawRepr {
                     // before we got the cache lock. Either way, we can safely remove the string
                     // from the cache and free it.
 
-                    let bytes = unsafe { &*raw::Payload::bytes(heap.as_ptr()) };
-
-                    if let Ok(entry) = table
-                        .find_entry(cache.hasher.hash_one(bytes), |storage: &Storage| {
-                            self.as_bytes() == storage.as_bytes()
-                        })
-                    {
+                    if let Ok(entry) = table.find_entry(hash, |storage: &Storage| {
+                        self.as_bytes() == storage.as_bytes()
+                    }) {
                         entry.remove();
                     } else {
                         panic!(
@@ -1081,13 +1093,19 @@ mod tests {
 
     fn reset_global_cache() {
         // We still want subsequent tests to be able to run if one in the same process panics.
-        match CACHE.table.lock() {
-            Ok(mut c) => *c = HashTable::new(),
-            Err(e) => *e.into_inner() = HashTable::new(),
+        for table in CACHE.tables.iter() {
+            match table.lock() {
+                Ok(mut c) => *c = HashTable::new(),
+                Err(e) => *e.into_inner() = HashTable::new(),
+            }
         }
     }
     fn num_strings_in_global_cache() -> usize {
-        CACHE.table.lock().unwrap().len()
+        CACHE
+            .tables
+            .iter()
+            .map(|table| table.lock().unwrap().len())
+            .sum()
     }
 
     impl RawRepr {
