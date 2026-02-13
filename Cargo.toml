@@ -6,7 +6,7 @@
 name = "flyweights"
 version = "0.1.5"
 edition = "2021"
-rust-version = "1.81.0"
+rust-version = "1.87.0"
 license = "BSD-2-Clause"
 readme = "README.md"
 exclude = ["CODE_OF_CONDUCT.md", "CONTRIBUTING.md"]

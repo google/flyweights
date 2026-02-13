@@ -28,40 +28,37 @@
 
 #![warn(missing_docs, clippy::all)]
 
+mod flybytestr;
+mod flycstr;
+mod flystr;
 mod raw;
 
-use bstr::{BStr, BString};
+pub use flybytestr::FlyByteStr;
+pub use flycstr::FlyCStr;
+pub use flystr::FlyStr;
+
 use foldhash::fast::RandomState;
 use hashbrown::{hash_table::Entry, hash_table::VacantEntry, HashTable};
 use std::borrow::Borrow;
-use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::hash::{BuildHasher as _, Hash, Hasher};
-use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::Mutex;
-
-#[cfg(feature = "serde")]
-use serde::de::{Deserializer, Visitor};
-#[cfg(feature = "serde")]
-use serde::ser::Serializer;
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
 
 /// The global string cache for `FlyStr`.
 ///
 /// If a live `FlyStr` contains an `Storage`, the `Storage` must also be in this cache and it must
 /// have a refcount of >= 2.
-static CACHE: std::sync::LazyLock<Cache> = std::sync::LazyLock::new(Cache::default);
+pub(crate) static CACHE: std::sync::LazyLock<Cache> = std::sync::LazyLock::new(Cache::default);
 
 #[derive(Default)]
-struct Cache {
-    hasher: RandomState,
-    table: Mutex<HashTable<Storage>>,
+pub(crate) struct Cache {
+    pub(crate) hasher: RandomState,
+    pub(crate) table: Mutex<HashTable<Storage>>,
 }
 
 /// Wrapper type for stored strings that lets us query the cache without an owned value.
 #[repr(transparent)]
-struct Storage(NonNull<raw::Payload>);
+pub(crate) struct Storage(NonNull<raw::Payload>);
 
 // SAFETY: FlyStr storage is always safe to send across threads.
 unsafe impl Send for Storage {}
@@ -105,678 +102,8 @@ impl Borrow<[u8]> for Storage {
     }
 }
 
-/// An immutable string type which only stores a single copy of each string allocated. Internally
-/// represented as a shared pointer to the backing allocation. Occupies a single pointer width.
-///
-/// # Small strings
-///
-/// Very short strings are stored inline in the pointer with bit-tagging, so no allocations are
-/// performed.
-///
-/// # Performance
-///
-/// It's slower to construct than a regular `String` but trades that for reduced standing memory
-/// usage by deduplicating strings. `PartialEq` and `Hash` are implemented on the underlying pointer
-/// value rather than the pointed-to data for faster equality comparisons and indexing, which is
-/// sound by virtue of the type guaranteeing that only one `FlyStr` pointer value will exist at
-/// any time for a given string's contents.
-///
-/// As with any performance optimization, you should only use this type if you can measure the
-/// benefit it provides to your program. Pay careful attention to creating `FlyStr`s in hot paths
-/// as it may regress runtime performance.
-///
-/// # Allocation lifecycle
-///
-/// Intended for long-running system services with user-provided values, `FlyStr`s are removed from
-/// the global cache when the last reference to them is dropped. While this incurs some overhead
-/// it is important to prevent the value cache from becoming a denial-of-service vector.
-#[derive(Clone, Eq, Hash, PartialEq)]
-pub struct FlyStr(RawRepr);
-
-#[cfg(feature = "json_schema")]
-impl schemars::JsonSchema for FlyStr {
-    fn schema_name() -> String {
-        str::schema_name()
-    }
-
-    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        str::json_schema(generator)
-    }
-
-    fn is_referenceable() -> bool {
-        false
-    }
-}
-
-static_assertions::assert_eq_size!(FlyStr, usize);
-
-// `Borrow` requires that:
-//
-// > Eq, Ord and Hash must be equivalent for borrowed and owned values: x.borrow() == y.borrow()
-// > should give the same result as x == y.
-//
-// The current implementation of `FlyStr` cannot satisfy `Borrow<str>` because the O(1) hashing
-// feature means that `s.hash() != s.borrow().hash()`.
-static_assertions::assert_not_impl_any!(FlyStr: Borrow<str>);
-
-impl FlyStr {
-    /// Create a `FlyStr`, allocating it in the cache if the value is not already cached.
-    ///
-    /// # Performance
-    ///
-    /// Creating an instance of this type for strings longer than the maximum inline size requires
-    /// accessing the global cache of strings, which involves taking a lock. When multiple threads
-    /// are allocating lots of strings there may be contention. Each string allocated is hashed for
-    /// lookup in the cache.
-    #[inline]
-    pub fn new(s: impl AsRef<str>) -> Self {
-        Self(RawRepr::new(s.as_ref().as_bytes()))
-    }
-
-    /// Returns the underlying string slice.
-    #[inline]
-    pub fn as_str(&self) -> &str {
-        // SAFETY: Every FlyStr is constructed from valid UTF-8 bytes.
-        unsafe { std::str::from_utf8_unchecked(self.0.as_bytes()) }
-    }
-}
-
-impl Default for FlyStr {
-    #[inline]
-    fn default() -> Self {
-        Self::new("")
-    }
-}
-
-impl From<&'_ str> for FlyStr {
-    #[inline]
-    fn from(s: &str) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<&'_ String> for FlyStr {
-    #[inline]
-    fn from(s: &String) -> Self {
-        Self::new(&**s)
-    }
-}
-
-impl From<String> for FlyStr {
-    #[inline]
-    fn from(s: String) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<Box<str>> for FlyStr {
-    #[inline]
-    fn from(s: Box<str>) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<&Box<str>> for FlyStr {
-    #[inline]
-    fn from(s: &Box<str>) -> Self {
-        Self::new(&**s)
-    }
-}
-
-impl TryFrom<FlyByteStr> for FlyStr {
-    type Error = std::str::Utf8Error;
-
-    #[inline]
-    fn try_from(b: FlyByteStr) -> Result<FlyStr, Self::Error> {
-        // The internals of both FlyStr and FlyByteStr are the same, but it's only sound to return
-        // a FlyStr if the RawRepr contains/points to valid UTF-8.
-        std::str::from_utf8(b.as_bytes())?;
-        Ok(FlyStr(b.0))
-    }
-}
-
-impl From<FlyStr> for String {
-    #[inline]
-    fn from(s: FlyStr) -> String {
-        s.as_str().to_owned()
-    }
-}
-
-impl From<&'_ FlyStr> for String {
-    #[inline]
-    fn from(s: &FlyStr) -> String {
-        s.as_str().to_owned()
-    }
-}
-
-impl Deref for FlyStr {
-    type Target = str;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.as_str()
-    }
-}
-
-impl AsRef<str> for FlyStr {
-    #[inline]
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl PartialOrd for FlyStr {
-    #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for FlyStr {
-    #[inline]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_str().cmp(other.as_str())
-    }
-}
-
-impl PartialEq<str> for FlyStr {
-    #[inline]
-    fn eq(&self, other: &str) -> bool {
-        self.as_str() == other
-    }
-}
-
-impl PartialEq<&'_ str> for FlyStr {
-    #[inline]
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
-
-impl PartialEq<String> for FlyStr {
-    #[inline]
-    fn eq(&self, other: &String) -> bool {
-        self.as_str() == &**other
-    }
-}
-
-impl PartialEq<FlyByteStr> for FlyStr {
-    #[inline]
-    fn eq(&self, other: &FlyByteStr) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl PartialEq<&'_ FlyByteStr> for FlyStr {
-    #[inline]
-    fn eq(&self, other: &&FlyByteStr) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl PartialOrd<str> for FlyStr {
-    #[inline]
-    fn partial_cmp(&self, other: &str) -> Option<std::cmp::Ordering> {
-        self.as_str().partial_cmp(other)
-    }
-}
-
-impl PartialOrd<&str> for FlyStr {
-    #[inline]
-    fn partial_cmp(&self, other: &&str) -> Option<std::cmp::Ordering> {
-        self.as_str().partial_cmp(*other)
-    }
-}
-
-impl PartialOrd<FlyByteStr> for FlyStr {
-    #[inline]
-    fn partial_cmp(&self, other: &FlyByteStr) -> Option<std::cmp::Ordering> {
-        BStr::new(self.as_str()).partial_cmp(other.as_bstr())
-    }
-}
-
-impl PartialOrd<&'_ FlyByteStr> for FlyStr {
-    #[inline]
-    fn partial_cmp(&self, other: &&FlyByteStr) -> Option<std::cmp::Ordering> {
-        BStr::new(self.as_str()).partial_cmp(other.as_bstr())
-    }
-}
-
-impl Debug for FlyStr {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        Debug::fmt(self.as_str(), f)
-    }
-}
-
-impl Display for FlyStr {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        Display::fmt(self.as_str(), f)
-    }
-}
-
-#[cfg(feature = "serde")]
-impl Serialize for FlyStr {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'d> Deserialize<'d> for FlyStr {
-    fn deserialize<D: Deserializer<'d>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_str(FlyStrVisitor)
-    }
-}
-
-#[cfg(feature = "serde")]
-struct FlyStrVisitor;
-
-#[cfg(feature = "serde")]
-impl Visitor<'_> for FlyStrVisitor {
-    type Value = FlyStr;
-    fn expecting(&self, formatter: &mut Formatter<'_>) -> FmtResult {
-        formatter.write_str("a string")
-    }
-
-    fn visit_borrowed_str<E>(self, v: &str) -> Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        Ok(v.into())
-    }
-
-    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        Ok(v.into())
-    }
-
-    fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        Ok(v.into())
-    }
-}
-
-/// An immutable bytestring type which only stores a single copy of each string allocated.
-/// Internally represented as a shared pointer to the backing allocation. Occupies a single pointer width.
-///
-/// # Small strings
-///
-/// Very short strings are stored inline in the pointer with bit-tagging, so no allocations are
-/// performed.
-///
-/// # Performance
-///
-/// It's slower to construct than a regular `BString` but trades that for reduced standing memory
-/// usage by deduplicating strings. `PartialEq` and `Hash` are implemented on the underlying pointer
-/// value rather than the pointed-to data for faster equality comparisons and indexing, which is
-/// sound by virtue of the type guaranteeing that only one `FlyByteStr` pointer value will exist at
-/// any time for a given string's contents.
-///
-/// As with any performance optimization, you should only use this type if you can measure the
-/// benefit it provides to your program. Pay careful attention to creating `FlyByteStr`s in hot
-/// paths as it may regress runtime performance.
-///
-/// # Allocation lifecycle
-///
-/// Intended for long-running system services with user-provided values, `FlyByteStr`s are removed
-/// from the global cache when the last reference to them is dropped. While this incurs some
-/// overhead it is important to prevent the value cache from becoming a denial-of-service vector.
-#[derive(Clone, Eq, Hash, PartialEq)]
-pub struct FlyByteStr(RawRepr);
-
-static_assertions::assert_eq_size!(FlyByteStr, usize);
-
-// `Borrow` requires that:
-//
-// > Eq, Ord and Hash must be equivalent for borrowed and owned values: x.borrow() == y.borrow()
-// > should give the same result as x == y.
-//
-// The current implementation of `FlyByteStr` cannot satisfy `Borrow<str>` because the O(1) hashing
-// feature means that `s.hash() != s.borrow().hash()`.
-static_assertions::assert_not_impl_any!(FlyByteStr: Borrow<str>);
-
-impl FlyByteStr {
-    /// Create a `FlyByteStr`, allocating it in the cache if the value is not already cached.
-    ///
-    /// # Performance
-    ///
-    /// Creating an instance of this type for strings longer than the maximum inline size requires
-    /// accessing the global cache of strings, which involves taking a lock. When multiple threads
-    /// are allocating lots of strings there may be contention. Each string allocated is hashed for
-    /// lookup in the cache.
-    #[inline]
-    pub fn new(s: impl AsRef<[u8]>) -> Self {
-        Self(RawRepr::new(s.as_ref()))
-    }
-
-    /// Returns the underlying bytestring slice.
-    #[inline]
-    pub fn as_bstr(&self) -> &BStr {
-        BStr::new(self.0.as_bytes())
-    }
-
-    /// Returns the underlying byte slice.
-    #[inline]
-    pub fn as_bytes(&self) -> &[u8] {
-        self.0.as_bytes()
-    }
-}
-
-impl Default for FlyByteStr {
-    #[inline]
-    fn default() -> Self {
-        Self::new(b"")
-    }
-}
-
-impl From<&'_ [u8]> for FlyByteStr {
-    #[inline]
-    fn from(s: &[u8]) -> Self {
-        Self::new(s)
-    }
-}
-
-impl<const N: usize> From<[u8; N]> for FlyByteStr {
-    #[inline]
-    fn from(s: [u8; N]) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<&'_ BStr> for FlyByteStr {
-    #[inline]
-    fn from(s: &BStr) -> Self {
-        Self(RawRepr::new(s))
-    }
-}
-
-impl From<&'_ str> for FlyByteStr {
-    #[inline]
-    fn from(s: &str) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<&'_ Vec<u8>> for FlyByteStr {
-    #[inline]
-    fn from(s: &Vec<u8>) -> Self {
-        Self(RawRepr::new(s))
-    }
-}
-
-impl From<&'_ String> for FlyByteStr {
-    #[inline]
-    fn from(s: &String) -> Self {
-        Self::new(&**s)
-    }
-}
-
-impl From<Vec<u8>> for FlyByteStr {
-    #[inline]
-    fn from(s: Vec<u8>) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<String> for FlyByteStr {
-    #[inline]
-    fn from(s: String) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<BString> for FlyByteStr {
-    #[inline]
-    fn from(s: BString) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<Box<[u8]>> for FlyByteStr {
-    #[inline]
-    fn from(s: Box<[u8]>) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<Box<str>> for FlyByteStr {
-    #[inline]
-    fn from(s: Box<str>) -> Self {
-        Self(RawRepr::new(s.as_bytes()))
-    }
-}
-
-impl From<&'_ Box<[u8]>> for FlyByteStr {
-    #[inline]
-    fn from(s: &'_ Box<[u8]>) -> Self {
-        Self(RawRepr::new(s))
-    }
-}
-
-impl From<&Box<str>> for FlyByteStr {
-    #[inline]
-    fn from(s: &Box<str>) -> Self {
-        Self::new(&**s)
-    }
-}
-
-impl From<FlyByteStr> for BString {
-    #[inline]
-    fn from(s: FlyByteStr) -> BString {
-        s.as_bstr().to_owned()
-    }
-}
-
-impl From<FlyByteStr> for Vec<u8> {
-    #[inline]
-    fn from(s: FlyByteStr) -> Vec<u8> {
-        s.as_bytes().to_owned()
-    }
-}
-
-impl From<FlyStr> for FlyByteStr {
-    #[inline]
-    fn from(s: FlyStr) -> FlyByteStr {
-        Self(s.0)
-    }
-}
-
-impl TryInto<String> for FlyByteStr {
-    type Error = std::string::FromUtf8Error;
-
-    #[inline]
-    fn try_into(self) -> Result<String, Self::Error> {
-        String::from_utf8(self.into())
-    }
-}
-
-impl Deref for FlyByteStr {
-    type Target = BStr;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.as_bstr()
-    }
-}
-
-impl AsRef<BStr> for FlyByteStr {
-    #[inline]
-    fn as_ref(&self) -> &BStr {
-        self.as_bstr()
-    }
-}
-
-impl PartialOrd for FlyByteStr {
-    #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for FlyByteStr {
-    #[inline]
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_bstr().cmp(other.as_bstr())
-    }
-}
-
-impl PartialEq<[u8]> for FlyByteStr {
-    #[inline]
-    fn eq(&self, other: &[u8]) -> bool {
-        self.as_bytes() == other
-    }
-}
-
-impl PartialEq<BStr> for FlyByteStr {
-    #[inline]
-    fn eq(&self, other: &BStr) -> bool {
-        self.as_bytes() == other
-    }
-}
-
-impl PartialEq<str> for FlyByteStr {
-    #[inline]
-    fn eq(&self, other: &str) -> bool {
-        self.as_bytes() == other.as_bytes()
-    }
-}
-
-impl PartialEq<&'_ [u8]> for FlyByteStr {
-    #[inline]
-    fn eq(&self, other: &&[u8]) -> bool {
-        self.as_bytes() == *other
-    }
-}
-
-impl PartialEq<&'_ BStr> for FlyByteStr {
-    #[inline]
-    fn eq(&self, other: &&BStr) -> bool {
-        self.as_bstr() == *other
-    }
-}
-
-impl PartialEq<&'_ str> for FlyByteStr {
-    #[inline]
-    fn eq(&self, other: &&str) -> bool {
-        self.as_bytes() == other.as_bytes()
-    }
-}
-
-impl PartialEq<String> for FlyByteStr {
-    #[inline]
-    fn eq(&self, other: &String) -> bool {
-        self.as_bytes() == other.as_bytes()
-    }
-}
-
-impl PartialEq<FlyStr> for FlyByteStr {
-    #[inline]
-    fn eq(&self, other: &FlyStr) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl PartialEq<&'_ FlyStr> for FlyByteStr {
-    #[inline]
-    fn eq(&self, other: &&FlyStr) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl PartialOrd<str> for FlyByteStr {
-    #[inline]
-    fn partial_cmp(&self, other: &str) -> Option<std::cmp::Ordering> {
-        self.as_bstr().partial_cmp(other)
-    }
-}
-
-impl PartialOrd<&str> for FlyByteStr {
-    #[inline]
-    fn partial_cmp(&self, other: &&str) -> Option<std::cmp::Ordering> {
-        self.as_bstr().partial_cmp(other)
-    }
-}
-
-impl PartialOrd<FlyStr> for FlyByteStr {
-    #[inline]
-    fn partial_cmp(&self, other: &FlyStr) -> Option<std::cmp::Ordering> {
-        self.as_bstr().partial_cmp(other.as_str())
-    }
-}
-
-impl Debug for FlyByteStr {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        Debug::fmt(self.as_bstr(), f)
-    }
-}
-
-impl Display for FlyByteStr {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        Display::fmt(self.as_bstr(), f)
-    }
-}
-
-#[cfg(feature = "serde")]
-impl Serialize for FlyByteStr {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_bytes(self.as_bytes())
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'d> Deserialize<'d> for FlyByteStr {
-    fn deserialize<D: Deserializer<'d>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_bytes(FlyByteStrVisitor)
-    }
-}
-
-#[cfg(feature = "serde")]
-struct FlyByteStrVisitor;
-
-#[cfg(feature = "serde")]
-impl<'de> Visitor<'de> for FlyByteStrVisitor {
-    type Value = FlyByteStr;
-    fn expecting(&self, formatter: &mut Formatter<'_>) -> FmtResult {
-        formatter.write_str("a string, a bytestring, or a sequence of bytes")
-    }
-
-    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        Ok(FlyByteStr::from(v))
-    }
-
-    fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        Ok(FlyByteStr::from(v))
-    }
-
-    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        Ok(FlyByteStr::from(v))
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: serde::de::SeqAccess<'de>,
-    {
-        let mut bytes = vec![];
-        while let Some(b) = seq.next_element::<u8>()? {
-            bytes.push(b);
-        }
-        Ok(FlyByteStr::from(bytes))
-    }
-}
-
 #[repr(C)] // Guarantee predictable field ordering.
-union RawRepr {
+pub(crate) union RawRepr {
     /// Strings longer than MAX_INLINE_SIZE are allocated using `raw::Payload`, which have a thin
     /// pointer representation. This means that `heap` variants of `Storage` will always have the
     /// pointer contents aligned and this variant will never have its least significant bit set.
@@ -805,7 +132,7 @@ static_assertions::assert_type_eq_all!(byteorder::NativeEndian, byteorder::Littl
 
 /// An enum with an actual discriminant that allows us to limit the reach of unsafe code in the
 /// implementation without affecting the stored size of `RawRepr`.
-enum SafeRepr<'a> {
+pub(crate) enum SafeRepr<'a> {
     Heap(NonNull<raw::Payload>),
     Inline(&'a InlineRepr),
 }
@@ -817,7 +144,7 @@ unsafe impl Sync for RawRepr {}
 
 impl RawRepr {
     #[inline]
-    fn new(s: &[u8]) -> Self {
+    pub(crate) fn new(s: &[u8]) -> Self {
         if s.len() <= MAX_INLINE_SIZE {
             RawRepr::new_inline(s)
         } else {
@@ -884,7 +211,7 @@ impl RawRepr {
     }
 
     #[inline]
-    fn project(&self) -> SafeRepr<'_> {
+    pub(crate) fn project(&self) -> SafeRepr<'_> {
         if self.is_inline() {
             // SAFETY: Just checked that this is the inline variant.
             SafeRepr::Inline(unsafe { &self.inline })
@@ -895,11 +222,23 @@ impl RawRepr {
     }
 
     #[inline]
-    fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         match self.project() {
             // SAFETY: FlyStr owns the payload stored as a NonNull, it is live as long as `FlyStr`.
             SafeRepr::Heap(ptr) => unsafe { &*raw::Payload::bytes(ptr.as_ptr()) },
             SafeRepr::Inline(i) => i.as_bytes(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refcount(&self) -> Option<usize> {
+        match self.project() {
+            SafeRepr::Heap(ptr) => {
+                // SAFETY: The payload is live as long as the repr is live.
+                let count = unsafe { raw::Payload::refcount(ptr.as_ptr()) };
+                Some(count)
+            }
+            SafeRepr::Inline(_) => None,
         }
     }
 }
@@ -1023,7 +362,7 @@ impl Drop for RawRepr {
 
 #[derive(Clone, Copy, Hash, PartialEq)]
 #[repr(C)] // Preserve field ordering.
-struct InlineRepr {
+pub(crate) struct InlineRepr {
     /// The first byte, which corresponds to the LSB of a pointer in the other variant.
     ///
     /// When the first bit is `1` the rest of this byte stores the length of the inline string.
@@ -1034,7 +373,7 @@ struct InlineRepr {
 
 /// We can store small strings up to 1 byte less than the size of the pointer to the heap-allocated
 /// string.
-const MAX_INLINE_SIZE: usize = std::mem::size_of::<NonNull<raw::Payload>>() - 1;
+pub(crate) const MAX_INLINE_SIZE: usize = std::mem::size_of::<NonNull<raw::Payload>>() - 1;
 
 // Guard rail to make sure we never end up with an incorrect inline size encoding. Ensure that
 // MAX_INLINE_SIZE is always smaller than the maximum size we can represent in a byte with the LSB
@@ -1043,7 +382,7 @@ static_assertions::const_assert!((u8::MAX >> 1) as usize >= MAX_INLINE_SIZE);
 
 impl InlineRepr {
     #[inline]
-    fn new(s: &[u8]) -> Self {
+    pub(crate) fn new(s: &[u8]) -> Self {
         assert!(s.len() <= MAX_INLINE_SIZE);
 
         // Set the first byte to the length of the inline string with LSB masked to 1.
@@ -1059,500 +398,24 @@ impl InlineRepr {
     }
 
     #[inline]
-    fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         let len = self.masked_len >> 1;
         &self.contents[..len as usize]
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_utils {
     use super::*;
-    use static_assertions::{const_assert, const_assert_eq};
-    use std::collections::{BTreeSet, HashSet};
-    use test_case::test_case;
 
-    // These tests all manipulate the process-global cache in the parent module. On target devices
-    // we run each test case in its own process, so the test cases can't pollute each other. On
-    // host, we run tests with a process for each suite (which is the Rust upstream default), and
-    // we need to manually isolate the tests from each other.
-    #[cfg(not(target_os = "fuchsia"))]
-    use serial_test::serial;
-
-    fn reset_global_cache() {
+    pub(crate) fn reset_global_cache() {
         // We still want subsequent tests to be able to run if one in the same process panics.
         match CACHE.table.lock() {
             Ok(mut c) => *c = HashTable::new(),
             Err(e) => *e.into_inner() = HashTable::new(),
         }
     }
-    fn num_strings_in_global_cache() -> usize {
+    pub(crate) fn num_strings_in_global_cache() -> usize {
         CACHE.table.lock().unwrap().len()
-    }
-
-    impl RawRepr {
-        fn refcount(&self) -> Option<usize> {
-            match self.project() {
-                SafeRepr::Heap(ptr) => {
-                    // SAFETY: The payload is live as long as the repr is live.
-                    let count = unsafe { raw::Payload::refcount(ptr.as_ptr()) };
-                    Some(count)
-                }
-                SafeRepr::Inline(_) => None,
-            }
-        }
-    }
-
-    const SHORT_STRING: &str = "hello";
-    const_assert!(SHORT_STRING.len() < MAX_INLINE_SIZE);
-
-    const MAX_LEN_SHORT_STRING: &str = "hello!!";
-    const_assert_eq!(MAX_LEN_SHORT_STRING.len(), MAX_INLINE_SIZE);
-
-    const MIN_LEN_LONG_STRING: &str = "hello!!!";
-    const_assert_eq!(MIN_LEN_LONG_STRING.len(), MAX_INLINE_SIZE + 1);
-
-    const LONG_STRING: &str = "hello, world!!!!!!!!!!!!!!!!!!!!";
-    const_assert!(LONG_STRING.len() > MAX_INLINE_SIZE);
-
-    const SHORT_NON_UTF8: &[u8] = b"\xF0\x28\x8C\x28";
-    const_assert!(SHORT_NON_UTF8.len() < MAX_INLINE_SIZE);
-
-    const LONG_NON_UTF8: &[u8] = b"\xF0\x28\x8C\x28\xF0\x28\x8C\x28";
-    const_assert!(LONG_NON_UTF8.len() > MAX_INLINE_SIZE);
-
-    #[test_case("" ; "empty string")]
-    #[test_case(SHORT_STRING ; "short strings")]
-    #[test_case(MAX_LEN_SHORT_STRING ; "max len short strings")]
-    #[test_case(MIN_LEN_LONG_STRING ; "barely long strings")]
-    #[test_case(LONG_STRING ; "long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn string_formatting_is_equivalent_to_str(original: &str) {
-        reset_global_cache();
-
-        let cached = FlyStr::new(original);
-        assert_eq!(format!("{original}"), format!("{cached}"));
-        assert_eq!(format!("{original:?}"), format!("{cached:?}"));
-
-        let cached = FlyByteStr::new(original);
-        assert_eq!(format!("{original}"), format!("{cached}"));
-        assert_eq!(format!("{original:?}"), format!("{cached:?}"));
-    }
-
-    #[test_case("" ; "empty string")]
-    #[test_case(SHORT_STRING ; "short strings")]
-    #[test_case(MAX_LEN_SHORT_STRING ; "max len short strings")]
-    #[test_case(MIN_LEN_LONG_STRING ; "barely long strings")]
-    #[test_case(LONG_STRING ; "long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn string_equality_works(contents: &str) {
-        reset_global_cache();
-
-        let cached = FlyStr::new(contents);
-        let bytes_cached = FlyByteStr::new(contents);
-        assert_eq!(cached, cached.clone(), "must be equal to itself");
-        assert_eq!(cached, contents, "must be equal to the original");
-        assert_eq!(
-            cached,
-            contents.to_owned(),
-            "must be equal to an owned copy of the original"
-        );
-        assert_eq!(cached, bytes_cached);
-
-        // test inequality too
-        assert_ne!(cached, "goodbye");
-        assert_ne!(bytes_cached, "goodbye");
-    }
-
-    #[test_case("", SHORT_STRING ; "empty and short string")]
-    #[test_case(SHORT_STRING, MAX_LEN_SHORT_STRING ; "two short strings")]
-    #[test_case(MAX_LEN_SHORT_STRING, MIN_LEN_LONG_STRING ; "short and long strings")]
-    #[test_case(MIN_LEN_LONG_STRING, LONG_STRING ; "barely long and long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn string_comparison_works(lesser_contents: &str, greater_contents: &str) {
-        reset_global_cache();
-
-        let lesser = FlyStr::new(lesser_contents);
-        let lesser_bytes = FlyByteStr::from(lesser_contents);
-        let greater = FlyStr::new(greater_contents);
-        let greater_bytes = FlyByteStr::from(greater_contents);
-
-        // lesser as method receiver
-        assert!(lesser < greater);
-        assert!(lesser < greater_bytes);
-        assert!(lesser_bytes < greater);
-        assert!(lesser_bytes < greater_bytes);
-        assert!(lesser <= greater);
-        assert!(lesser <= greater_bytes);
-        assert!(lesser_bytes <= greater);
-        assert!(lesser_bytes <= greater_bytes);
-
-        // greater as method receiver
-        assert!(greater > lesser);
-        assert!(greater > lesser_bytes);
-        assert!(greater_bytes > lesser);
-        assert!(greater >= lesser);
-        assert!(greater >= lesser_bytes);
-        assert!(greater_bytes >= lesser);
-        assert!(greater_bytes >= lesser_bytes);
-    }
-
-    #[test_case("" ; "empty string")]
-    #[test_case(SHORT_STRING ; "short strings")]
-    #[test_case(MAX_LEN_SHORT_STRING ; "max len short strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn no_allocations_for_short_strings(contents: &str) {
-        reset_global_cache();
-        assert_eq!(num_strings_in_global_cache(), 0);
-
-        let original = FlyStr::new(contents);
-        assert_eq!(num_strings_in_global_cache(), 0);
-        assert_eq!(original.0.refcount(), None);
-
-        let cloned = original.clone();
-        assert_eq!(num_strings_in_global_cache(), 0);
-        assert_eq!(cloned.0.refcount(), None);
-
-        let deduped = FlyStr::new(contents);
-        assert_eq!(num_strings_in_global_cache(), 0);
-        assert_eq!(deduped.0.refcount(), None);
-    }
-
-    #[test_case("" ; "empty string")]
-    #[test_case(SHORT_STRING ; "short strings")]
-    #[test_case(MAX_LEN_SHORT_STRING ; "max len short strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn no_allocations_for_short_bytestrings(contents: &str) {
-        reset_global_cache();
-        assert_eq!(num_strings_in_global_cache(), 0);
-
-        let original = FlyByteStr::new(contents);
-        assert_eq!(num_strings_in_global_cache(), 0);
-        assert_eq!(original.0.refcount(), None);
-
-        let cloned = original.clone();
-        assert_eq!(num_strings_in_global_cache(), 0);
-        assert_eq!(cloned.0.refcount(), None);
-
-        let deduped = FlyByteStr::new(contents);
-        assert_eq!(num_strings_in_global_cache(), 0);
-        assert_eq!(deduped.0.refcount(), None);
-    }
-
-    #[test_case(MIN_LEN_LONG_STRING ; "barely long strings")]
-    #[test_case(LONG_STRING ; "long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn only_one_copy_allocated_for_long_strings(contents: &str) {
-        reset_global_cache();
-
-        assert_eq!(num_strings_in_global_cache(), 0);
-
-        let original = FlyStr::new(contents);
-        assert_eq!(
-            num_strings_in_global_cache(),
-            1,
-            "only one string allocated"
-        );
-        assert_eq!(original.0.refcount(), Some(1), "one copy on stack");
-
-        let cloned = original.clone();
-        assert_eq!(
-            num_strings_in_global_cache(),
-            1,
-            "cloning just incremented refcount"
-        );
-        assert_eq!(cloned.0.refcount(), Some(2), "two copies on stack");
-
-        let deduped = FlyStr::new(contents);
-        assert_eq!(num_strings_in_global_cache(), 1, "new string was deduped");
-        assert_eq!(deduped.0.refcount(), Some(3), "three copies on stack");
-    }
-
-    #[test_case(MIN_LEN_LONG_STRING ; "barely long strings")]
-    #[test_case(LONG_STRING ; "long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn only_one_copy_allocated_for_long_bytestrings(contents: &str) {
-        reset_global_cache();
-
-        assert_eq!(num_strings_in_global_cache(), 0);
-
-        let original = FlyByteStr::new(contents);
-        assert_eq!(
-            num_strings_in_global_cache(),
-            1,
-            "only one string allocated"
-        );
-        assert_eq!(original.0.refcount(), Some(1), "one copy on stack");
-
-        let cloned = original.clone();
-        assert_eq!(
-            num_strings_in_global_cache(),
-            1,
-            "cloning just incremented refcount"
-        );
-        assert_eq!(cloned.0.refcount(), Some(2), "two copies on stack");
-
-        let deduped = FlyByteStr::new(contents);
-        assert_eq!(num_strings_in_global_cache(), 1, "new string was deduped");
-        assert_eq!(deduped.0.refcount(), Some(3), "three copies on stack");
-    }
-
-    #[test]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn utf8_and_bytestrings_share_the_cache() {
-        reset_global_cache();
-
-        assert_eq!(num_strings_in_global_cache(), 0, "cache is empty");
-
-        let _utf8 = FlyStr::from(MIN_LEN_LONG_STRING);
-        assert_eq!(num_strings_in_global_cache(), 1, "string was allocated");
-
-        let _bytes = FlyByteStr::from(MIN_LEN_LONG_STRING);
-        assert_eq!(
-            num_strings_in_global_cache(),
-            1,
-            "bytestring was pulled from cache"
-        );
-    }
-
-    #[test_case(MIN_LEN_LONG_STRING ; "barely long strings")]
-    #[test_case(LONG_STRING ; "long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn cached_strings_dropped_when_refs_dropped(contents: &str) {
-        reset_global_cache();
-
-        let alloced = FlyStr::new(contents);
-        assert_eq!(
-            num_strings_in_global_cache(),
-            1,
-            "only one string allocated"
-        );
-        drop(alloced);
-        assert_eq!(num_strings_in_global_cache(), 0, "last reference dropped");
-    }
-
-    #[test_case(MIN_LEN_LONG_STRING ; "barely long strings")]
-    #[test_case(LONG_STRING ; "long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn cached_bytestrings_dropped_when_refs_dropped(contents: &str) {
-        reset_global_cache();
-
-        let alloced = FlyByteStr::new(contents);
-        assert_eq!(
-            num_strings_in_global_cache(),
-            1,
-            "only one string allocated"
-        );
-        drop(alloced);
-        assert_eq!(num_strings_in_global_cache(), 0, "last reference dropped");
-    }
-
-    #[test_case("", SHORT_STRING ; "empty and short string")]
-    #[test_case(SHORT_STRING, MAX_LEN_SHORT_STRING ; "two short strings")]
-    #[test_case(SHORT_STRING, LONG_STRING ; "short and long strings")]
-    #[test_case(LONG_STRING, MAX_LEN_SHORT_STRING ; "long and max-len-short strings")]
-    #[test_case(MIN_LEN_LONG_STRING, LONG_STRING ; "barely long and long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn equality_and_hashing_with_pointer_value_works_correctly(first: &str, second: &str) {
-        reset_global_cache();
-
-        let first = FlyStr::new(first);
-        let second = FlyStr::new(second);
-
-        let mut set = HashSet::new();
-        set.insert(first.clone());
-        assert!(set.contains(&first));
-        assert!(!set.contains(&second));
-
-        // re-insert the same cmstring
-        set.insert(first);
-        assert_eq!(
-            set.len(),
-            1,
-            "set did not grow because the same string was inserted as before"
-        );
-
-        set.insert(second.clone());
-        assert_eq!(
-            set.len(),
-            2,
-            "inserting a different string must mutate the set"
-        );
-        assert!(set.contains(&second));
-
-        // re-insert the second cmstring
-        set.insert(second);
-        assert_eq!(set.len(), 2);
-    }
-
-    #[test_case("", SHORT_STRING ; "empty and short string")]
-    #[test_case(SHORT_STRING, MAX_LEN_SHORT_STRING ; "two short strings")]
-    #[test_case(SHORT_STRING, LONG_STRING ; "short and long strings")]
-    #[test_case(LONG_STRING, MAX_LEN_SHORT_STRING ; "long and max-len-short strings")]
-    #[test_case(MIN_LEN_LONG_STRING, LONG_STRING ; "barely long and long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn byte_equality_and_hashing_with_pointer_value_works_correctly(first: &str, second: &str) {
-        reset_global_cache();
-
-        let first = FlyByteStr::new(first);
-        let second = FlyByteStr::new(second);
-
-        let mut set = HashSet::new();
-        set.insert(first.clone());
-        assert!(set.contains(&first));
-        assert!(!set.contains(&second));
-
-        // re-insert the same string
-        set.insert(first);
-        assert_eq!(
-            set.len(),
-            1,
-            "set did not grow because the same string was inserted as before"
-        );
-
-        set.insert(second.clone());
-        assert_eq!(
-            set.len(),
-            2,
-            "inserting a different string must mutate the set"
-        );
-        assert!(set.contains(&second));
-
-        // re-insert the second string
-        set.insert(second);
-        assert_eq!(set.len(), 2);
-    }
-
-    #[test_case("", SHORT_STRING ; "empty and short string")]
-    #[test_case(SHORT_STRING, MAX_LEN_SHORT_STRING ; "two short strings")]
-    #[test_case(SHORT_STRING, LONG_STRING ; "short and long strings")]
-    #[test_case(LONG_STRING, MAX_LEN_SHORT_STRING ; "long and max-len-short strings")]
-    #[test_case(MIN_LEN_LONG_STRING, LONG_STRING ; "barely long and long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn comparison_for_btree_storage_works(first: &str, second: &str) {
-        reset_global_cache();
-
-        let first = FlyStr::new(first);
-        let second = FlyStr::new(second);
-
-        let mut set = BTreeSet::new();
-        set.insert(first.clone());
-        assert!(set.contains(&first));
-        assert!(!set.contains(&second));
-
-        // re-insert the same cmstring
-        set.insert(first);
-        assert_eq!(
-            set.len(),
-            1,
-            "set did not grow because the same string was inserted as before"
-        );
-
-        set.insert(second.clone());
-        assert_eq!(
-            set.len(),
-            2,
-            "inserting a different string must mutate the set"
-        );
-        assert!(set.contains(&second));
-
-        // re-insert the second cmstring
-        set.insert(second);
-        assert_eq!(set.len(), 2);
-    }
-
-    #[test_case("", SHORT_STRING ; "empty and short string")]
-    #[test_case(SHORT_STRING, MAX_LEN_SHORT_STRING ; "two short strings")]
-    #[test_case(SHORT_STRING, LONG_STRING ; "short and long strings")]
-    #[test_case(LONG_STRING, MAX_LEN_SHORT_STRING ; "long and max-len-short strings")]
-    #[test_case(MIN_LEN_LONG_STRING, LONG_STRING ; "barely long and long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn byte_comparison_for_btree_storage_works(first: &str, second: &str) {
-        reset_global_cache();
-
-        let first = FlyByteStr::new(first);
-        let second = FlyByteStr::new(second);
-
-        let mut set = BTreeSet::new();
-        set.insert(first.clone());
-        assert!(set.contains(&first));
-        assert!(!set.contains(&second));
-
-        // re-insert the same string
-        set.insert(first);
-        assert_eq!(
-            set.len(),
-            1,
-            "set did not grow because the same string was inserted as before"
-        );
-
-        set.insert(second.clone());
-        assert_eq!(
-            set.len(),
-            2,
-            "inserting a different string must mutate the set"
-        );
-        assert!(set.contains(&second));
-
-        // re-insert the second string
-        set.insert(second);
-        assert_eq!(set.len(), 2);
-    }
-
-    #[cfg(feature = "serde")]
-    #[test_case("" ; "empty string")]
-    #[test_case(SHORT_STRING ; "short strings")]
-    #[test_case(MAX_LEN_SHORT_STRING ; "max len short strings")]
-    #[test_case(MIN_LEN_LONG_STRING ; "min len long strings")]
-    #[test_case(LONG_STRING ; "long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn serde_works(contents: &str) {
-        reset_global_cache();
-
-        let s = FlyStr::new(contents);
-        let as_json = serde_json::to_string(&s).unwrap();
-        assert_eq!(as_json, format!("\"{contents}\""));
-        assert_eq!(s, serde_json::from_str::<FlyStr>(&as_json).unwrap());
-    }
-
-    #[cfg(feature = "serde")]
-    #[test_case("" ; "empty string")]
-    #[test_case(SHORT_STRING ; "short strings")]
-    #[test_case(MAX_LEN_SHORT_STRING ; "max len short strings")]
-    #[test_case(MIN_LEN_LONG_STRING ; "min len long strings")]
-    #[test_case(LONG_STRING ; "long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn serde_works_bytestring(contents: &str) {
-        reset_global_cache();
-
-        let s = FlyByteStr::new(contents);
-        let as_json = serde_json::to_string(&s).unwrap();
-        assert_eq!(s, serde_json::from_str::<FlyByteStr>(&as_json).unwrap());
-    }
-
-    #[test_case(SHORT_NON_UTF8 ; "short non-utf8 bytestring")]
-    #[test_case(LONG_NON_UTF8 ; "long non-utf8 bytestring")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn non_utf8_works(contents: &[u8]) {
-        reset_global_cache();
-
-        let res: Result<FlyStr, _> = FlyByteStr::from(contents).try_into();
-        res.unwrap_err();
-    }
-
-    #[test_case("" ; "empty string")]
-    #[test_case(SHORT_STRING ; "short strings")]
-    #[test_case(MAX_LEN_SHORT_STRING ; "max len short strings")]
-    #[test_case(MIN_LEN_LONG_STRING ; "min len long strings")]
-    #[test_case(LONG_STRING ; "long strings")]
-    #[cfg_attr(not(target_os = "fuchsia"), serial)]
-    fn flystr_to_flybytestr_and_back(contents: &str) {
-        reset_global_cache();
-
-        let bytestr = FlyByteStr::from(contents);
-        let flystr = FlyStr::try_from(bytestr.clone()).unwrap();
-        assert_eq!(bytestr, flystr);
-        let bytestr2 = FlyByteStr::from(flystr.clone());
-        assert_eq!(bytestr, bytestr2);
     }
 }
