@@ -135,16 +135,16 @@ pub struct FlyStr(RawRepr);
 
 #[cfg(feature = "json_schema")]
 impl schemars::JsonSchema for FlyStr {
-    fn schema_name() -> String {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
         str::schema_name()
     }
 
-    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         str::json_schema(generator)
     }
 
-    fn is_referenceable() -> bool {
-        false
+    fn inline_schema() -> bool {
+        true
     }
 }
 
